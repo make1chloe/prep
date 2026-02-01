@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Logic Note Generator (Safe Batch Edition)</title>
+    <title>AI Logic Note Generator (Smart Batch Edition)</title>
     <!-- React & Tailwind -->
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -71,10 +71,10 @@ Because farm fields are loaded with nutrients and water / relative to the natura
             const [singleResult, setSingleResult] = useState(null);
             
             // Batch Mode State
-            // Item structure: { id, text, source, result, status: 'idle'|'loading'|'success'|'error', errorMsg, selected: boolean }
             const [batchItems, setBatchItems] = useState([]); 
             const [isProcessingBatch, setIsProcessingBatch] = useState(false);
             const [processingStatusMsg, setProcessingStatusMsg] = useState("");
+            const [speedMode, setSpeedMode] = useState('safe'); // 'safe' | 'fast'
 
             // Common State
             const [apiKey, setApiKey] = useState('');
@@ -108,20 +108,16 @@ Because farm fields are loaded with nutrients and water / relative to the natura
                     
                     CRITICAL CONSTRAINTS FOR A4 LAYOUT:
                     1. **Item Limit**: EXACTLY 3 items per section. No more, no less.
-                    2. **Meaningful Context**: Do NOT use single keywords. Use short phrases like "**Subject + Key Attribute**" to provide context.
-                       - Bad: "Increase"
-                       - Good: "Productivity drastically increases"
-                       - Bad: "Fertilizer"
-                       - Good: "Farmers adding fertilizer"
+                    2. **Meaningful Context**: Use short phrases like "**Subject + Key Attribute**" (e.g., "Farmers adding fertilizer"). Do NOT use single words.
                     3. **Language**: **Korean Meaning (English Term)** format.
                     4. **Strict Quoting**: The English term inside parentheses MUST be a **direct quote (verbatim)** from the input text.
                     5. **Translation Rule (CRITICAL)**: 
-                       - Translate abstract nouns/concepts into natural Korean words.
-                       - Do NOT use transliteration unless it is a standard loanword.
+                       - Translate abstract nouns/concepts into natural Korean words (e.g., "hardship" -> "고난", "mentality" -> "사고방식"). 
+                       - Do NOT use transliteration (Hangulizing English sounds like "하드십") UNLESS it is a concrete noun or standard loanword like "Bus", "Internet", "Computer", "Data", "Robot".
 
                     Structure constraints:
                     - "contrast": Comparing two concepts (A vs B).
-                    - "flow": Cause -> Effect, or Problem -> Solution. Even for flow, create two distinct sections.
+                    - "flow": Cause -> Effect, or Problem -> Solution. Even for flow, create two distinct sections (e.g., Cause Section and Effect Section).
                     
                     JSON Schema:
                     {
@@ -130,7 +126,7 @@ Because farm fields are loaded with nutrients and water / relative to the natura
                         "type": "contrast" or "flow",
                         "sectionA": {
                             "title": "Concept A Title (e.g. Cause, Problem)",
-                            "items": [ { "text": "Subject/Context in Korean (Exact English Quote)", "sub": "Short elaboration", "symbol": "=" } ],
+                            "items": [ { "text": "Natural Korean (Exact English Quote)", "sub": "Very short elaboration", "symbol": "=" } ],
                             "conclusion": "Summary of Section A (Subject + Outcome)"
                         },
                         "sectionB": {
@@ -139,8 +135,8 @@ Because farm fields are loaded with nutrients and water / relative to the natura
                             "conclusion": "Summary of Section B (Subject + Outcome)"
                         },
                         "finalConclusion": {
-                            "main": "Main Result / Takeaway",
-                            "sub": "Implication or Final Thought"
+                            "main": "Main Result Keyword",
+                            "sub": "Implication Keyword"
                         }
                     }
                 `;
@@ -219,7 +215,7 @@ Because farm fields are loaded with nutrients and water / relative to the natura
                 setBatchItems(prev => prev.map(item => ({ ...item, selected: selectAll })));
             };
 
-            // Robust Batch Processing with Rate Limit Handling
+            // Robust Batch Processing with Smart 60s Wait
             const processBatch = async () => {
                 if (!apiKey) { setError("API Key Required for Batch Processing"); return; }
                 setIsProcessingBatch(true);
@@ -228,7 +224,6 @@ Because farm fields are loaded with nutrients and water / relative to the natura
 
                 let currentItems = [...batchItems];
                 
-                // Get items that need processing
                 const itemsToProcess = currentItems
                     .map((item, idx) => ({ idx, ...item }))
                     .filter(item => item.selected && item.status !== 'success');
@@ -237,18 +232,17 @@ Because farm fields are loaded with nutrients and water / relative to the natura
                     const itemWrapper = itemsToProcess[i];
                     const idx = itemWrapper.idx;
                     
-                    // Set loading status
                     currentItems[idx].status = 'loading';
                     setBatchItems([...currentItems]);
                     
                     let success = false;
                     let retries = 0;
-                    const maxRetries = 5; // 최대 5번 재시도
+                    const maxRetries = 10; // Increased retry limit due to long waits
 
                     while (!success && retries < maxRetries) {
                         try {
-                            // Update Status Message
-                            setProcessingStatusMsg(`처리 중: ${i + 1}/${itemsToProcess.length} (항목 ID: ${idx+1}) ${retries > 0 ? `- 재시도 ${retries}회` : ''}`);
+                            const currentRetryText = retries > 0 ? ` (재시도 ${retries})` : '';
+                            setProcessingStatusMsg(`처리 중: ${i + 1}/${itemsToProcess.length}${currentRetryText}`);
                             
                             const result = await callGeminiAPI(currentItems[idx].text);
                             currentItems[idx].result = result;
@@ -256,21 +250,23 @@ Because farm fields are loaded with nutrients and water / relative to the natura
                             currentItems[idx].errorMsg = null;
                             success = true;
                             
-                            // Success -> Save and Short Wait
+                            // Success -> Update UI and wait standard delay
                             setBatchItems([...currentItems]);
-                            // 3 seconds cool down between successful requests to be safe
-                            await new Promise(r => setTimeout(r, 3000)); 
+                            const delay = speedMode === 'safe' ? 5000 : 500; // Safe mode increased to 5s
+                            await new Promise(r => setTimeout(r, delay)); 
 
                         } catch (err) {
                             console.warn(`Error processing item ${idx}:`, err);
                             
                             if (err.message === "RATE_LIMIT" || err.message.includes("429")) {
-                                setProcessingStatusMsg(`⚠️ 사용량 제한 감지. 10초 대기 후 재시도 중...`);
-                                // Wait 10 seconds for Rate Limit
-                                await new Promise(r => setTimeout(r, 10000));
+                                // Smart Wait: Wait 60 seconds for quota reset
+                                for (let s = 60; s > 0; s--) {
+                                    setProcessingStatusMsg(`⚠️ 사용량 제한 감지. ${s}초 후 재시도...`);
+                                    await new Promise(r => setTimeout(r, 1000));
+                                }
                                 retries++;
                             } else {
-                                // Other errors: Wait 2 seconds and retry
+                                // Other errors: Wait 2 seconds
                                 await new Promise(r => setTimeout(r, 2000));
                                 retries++;
                             }
@@ -279,7 +275,7 @@ Because farm fields are loaded with nutrients and water / relative to the natura
 
                     if (!success) {
                         currentItems[idx].status = 'error';
-                        currentItems[idx].errorMsg = "최대 재시도 초과";
+                        currentItems[idx].errorMsg = "재시도 횟수 초과";
                         setBatchItems([...currentItems]);
                     }
                 }
@@ -303,7 +299,7 @@ Because farm fields are loaded with nutrients and water / relative to the natura
                             <div className="flex justify-between items-center mb-6">
                                 <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-indigo-600"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
-                                    AI 구조화 노트 {mode === 'batch' && '(안전 일괄 처리 모드)'}
+                                    AI 구조화 노트 {mode === 'batch' && '(스마트 일괄 처리)'}
                                 </h1>
                                 <div className="flex gap-2 bg-gray-100 p-1 rounded-lg">
                                     <button onClick={() => setMode('single')} className={`px-4 py-2 text-sm font-bold rounded-md transition ${mode === 'single' ? 'bg-white shadow text-indigo-600' : 'text-gray-500 hover:text-gray-700'}`}>개별 입력</button>
@@ -340,6 +336,39 @@ Because farm fields are loaded with nutrients and water / relative to the natura
                                         </div>
                                         <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".xlsx, .xls" className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 mb-4" />
                                         
+                                        {/* Speed Mode Selection */}
+                                        {batchItems.length > 0 && (
+                                            <div className="flex justify-center gap-6 mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                                                <label className="flex items-center gap-2 cursor-pointer">
+                                                    <input 
+                                                        type="radio" 
+                                                        name="speed" 
+                                                        checked={speedMode === 'safe'} 
+                                                        onChange={() => setSpeedMode('safe')}
+                                                        className="w-4 h-4 text-indigo-600"
+                                                    />
+                                                    <div className="text-left">
+                                                        <span className="block text-sm font-bold text-gray-800">🐢 안전 모드 (추천)</span>
+                                                        <span className="block text-xs text-gray-500">5초 간격, 오류 시 60초 대기</span>
+                                                    </div>
+                                                </label>
+                                                <div className="w-px bg-gray-300"></div>
+                                                <label className="flex items-center gap-2 cursor-pointer">
+                                                    <input 
+                                                        type="radio" 
+                                                        name="speed" 
+                                                        checked={speedMode === 'fast'} 
+                                                        onChange={() => setSpeedMode('fast')}
+                                                        className="w-4 h-4 text-indigo-600"
+                                                    />
+                                                    <div className="text-left">
+                                                        <span className="block text-sm font-bold text-gray-800">🚀 고속 모드</span>
+                                                        <span className="block text-xs text-gray-500">대기 없음 (유료 사용자용)</span>
+                                                    </div>
+                                                </label>
+                                            </div>
+                                        )}
+
                                         {batchItems.length > 0 && (
                                             <div className="text-left mb-4">
                                                 <div className="flex justify-between items-center text-sm font-medium text-gray-700 mb-2">
@@ -363,10 +392,10 @@ Because farm fields are loaded with nutrients and water / relative to the natura
                                                             <span className="w-6 font-bold text-gray-400">{idx + 1}.</span>
                                                             <span className="font-semibold text-blue-600 w-1/4 truncate" title={item.source}>{item.source || '(출처없음)'}</span>
                                                             <span className="truncate flex-1" title={item.text}>{item.text.substring(0, 40)}...</span>
-                                                            <span className="w-24 text-right font-bold text-[11px]">
+                                                            <span className="w-24 text-right font-bold text-[11px]" title={item.errorMsg}>
                                                                 {item.status === 'loading' && '⏳ 처리중...'}
                                                                 {item.status === 'success' && '✅ 완료'}
-                                                                {item.status === 'error' && '❌ 실패(Retry)'}
+                                                                {item.status === 'error' && '❌ 실패'}
                                                                 {item.status === 'idle' && '대기'}
                                                             </span>
                                                         </div>
